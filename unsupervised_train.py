@@ -6,75 +6,62 @@ Created on Sat Sep 28 18:52:16 2019
 @author: ishwark
 """
 
-#%%
+import torch
+import torchvision as tv
+
+from torch.utils.tensorboard import SummaryWriter
 
 from unsupervised_model import ConvAutoEncoder
 from data_loader import CifarLoader
-import torch
 
-BATCH_SIZE = 125
-PRINT_FREQ = 20 # in batches
-PLOT_FREQ  = 125 # in batches
+from torch.utils.data import DataLoader
 
-device = torch.device("cuda:0")  if True else torch.device("cpu")
+BATCH_SIZE = 1000
+LOG_FREQ   = 50 # in batches
+
+device = torch.device("cuda:0")  if torch.cuda.device_count() >=1 else torch.device("cpu")
 float_dtype = torch.float32
 
 model = ConvAutoEncoder()
 model.to(device).to(float_dtype)
 
-dl = CifarLoader('/home/ishwark/autoencoder/', device, float_dtype)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)        
 
+train_loader = DataLoader(CifarLoader(),
+                          batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+test_loader  = DataLoader(CifarLoader(is_test=True), num_workers=2)
 
-#%%
+with SummaryWriter('runs/auto_enc') as writer:
+    writer.add_graph(model,  torch.Tensor(torch.rand(BATCH_SIZE, 3, 32, 32)).to(device))
+    writer.flush()
+# %%
 
-
-import time
-import matplotlib.pyplot as plt
-from torch import optim
-
-optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)        
 model.train()
-
-num_batches = dl.num_images() // BATCH_SIZE
- 
-losses = []
-for epoch in range(0, 25):
-    dl.shuffle()
-    for bt in range(0, num_batches):
-        start = time.time()
-        
-        _, batch = dl.get_one_image_batch(bt * BATCH_SIZE, True, BATCH_SIZE) 
-                
+step = 0
+for epoch in range(0, 100):
+    for bt, batch_label in enumerate(train_loader):
+        batch = batch_label[0].to(device)
         recon, mu, logvar = model(batch)
-        bc, kl = model.loss_function(recon, batch, mu, logvar)
+        
+        batch_1c = torch.mean(batch, axis=1, keepdim = True)        
+        bc, kl = model.loss_function(recon, batch_1c, mu, logvar)
         loss = bc + kl
-        
-        losses.append(loss.item())
-        
-        optimizer.zero_grad() 
-        loss.backward()        
-        optimizer.step()        
-        
-        
-        if bt % PRINT_FREQ == 0:
-            print("%d:%d\t Loss:%1.4f, BCE:%1.4f, KL:%1.4f, \t%1.3fs, %d"%(
-                    epoch, bt,
-                    loss.item() , bc.item(), kl.item(), time.time()-start, 
-                    bt*BATCH_SIZE))
 
-        if bt % PLOT_FREQ == 0:
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if step % LOG_FREQ == 0:
+            print("%d,\t%d:\t%1.5f = %1.5f + %1.5f"%(epoch, step, loss.item(),  bc.item(), kl.item()))
+            writer.add_image('Train-Images', tv.utils.make_grid(batch[0:4]), step)
+            writer.add_image('Train-1C-Images', tv.utils.make_grid(batch_1c[0:4]), step)
+            writer.add_image('Recon-Images', tv.utils.make_grid(recon[0:4]), step)
             
-            fig = plt.figure()
-            grph = plt.plot( range(len(losses)), losses)
-                                    
-            fig = plt.figure()
-            a = fig.add_subplot(1, 2, 1)
-            CifarLoader.display_img(batch[0].cpu().detach(), "img")
-            a.set_title('Image: {}'.format(bt * BATCH_SIZE))
-            a = fig.add_subplot(1, 2, 2)
-            CifarLoader.display_img(recon[0].cpu().detach(), "recon")
-            a.set_title('Recon')
+            writer.add_scalars('Loss', {'total':loss, 'bc':bc, 'kl': kl}, step)
             
-            plt.show()
-        
+            
+        step = step + 1
+    torch.save(model.state_dict(), "epoch_{}.model".format(epoch))
+            
+            
         

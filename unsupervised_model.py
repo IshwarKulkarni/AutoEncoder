@@ -49,11 +49,9 @@ class ConvAutoEncoder(nn.Module):
             nn.ConvTranspose2d(k_s[1], k_s[2], 3, stride=1),
             nn.ReLU(),
             
-            nn.ConvTranspose2d(k_s[2], 3, 3, stride=1),
+            nn.ConvTranspose2d(k_s[2], 1, 3, stride=1),
             nn.Sigmoid()
             )
-        self.recon_loss = nn.BCELoss()
-        
 
     def forward(self, x):        
         enc   = self.convEnc(x)
@@ -93,5 +91,5 @@ class ConvAutoEncoder(nn.Module):
     def loss_function(self, recon_x, x, mu=None, logvar=None):
         BCE = F.binary_cross_entropy(recon_x, x)
         KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        KLD /= x.shape[0] * 1024  * 3
+        KLD /= x.shape[0] * 1024  * x.shape[1] 
         return BCE,  KLD

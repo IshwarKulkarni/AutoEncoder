@@ -19,25 +19,17 @@ main functions:
 import numpy as np
 import pickle
 import os
-import torch
+from torch.utils.data import Dataset
 
-class CifarLoader:
+class CifarLoader(Dataset):
     label_names = []
-    def __init__(self, cifar_loc='./', 
-                 device=torch.device("cpu"),
-                 prec=torch.float32):
+    def __init__(self, cifar_loc='./', is_test=False):
         
         super(CifarLoader, self).__init__()
         self.cifar_loc = cifar_loc
-        self.device = device
-        self.precision = prec
-
-        self.train_batches = {}
-        self.test_batch = {}        
+        self._num_images = 0
+        self.batches = {}
         self._load_all_batches()
-
-    def num_images(self, train=True):
-        return self.train_batches[b'num_images'] if train else self.test_batches[b'num_images']
 
     def _load_batch(self, file, prev_batches=None):
         batch = {}
@@ -45,50 +37,47 @@ class CifarLoader:
             batch = pickle.load(fo, encoding='bytes')
            
         num_instances = len(batch[b'filenames'])
+        self._num_images += num_instances
         batch[b'num_images'] = num_instances
-        images = np.reshape(batch[b'data'], [num_instances, 3, 32, 32])
-        batch[b'images'] = images.astype(np.float16)/256
+        batch[b'images'] = batch[b'data'] 
            
         del batch[b'data']
         del batch[b'filenames']
         del batch[b'batch_label']
         
         if prev_batches:
-            batch[b'num_images'] =  num_instances + prev_batches[b'num_images']
             batch[b'images'] = np.concatenate((batch[b'images'], prev_batches[b'images']), axis=0)
             batch[b'labels'] = batch[b'labels'] + prev_batches[b'labels']
             
         return batch
     
-    def _load_all_batches(self):
+    def _load_all_batches(self, is_test=False):
         
-        train_batches = None
-        for i in range(1,6):
-            name = '{}/cifar-10-batches-py/data_batch_{}'.format(self.cifar_loc,i)
-            train_batches = self._load_batch(name,train_batches)
-        
-        self.train_batches = train_batches
-        name = '{}/cifar-10-batches-py/test_batch'.format(self.cifar_loc,)
-        self.test_batch = self._load_batch(name)
+        if is_test:
+            name = '{}/cifar-10-batches-py/test_batch'.format(self.cifar_loc,)
+            self.batches = self._load_batch(name)
+        else:
+            batches = None
+            for i in range(1,6):
+                name = '{}/cifar-10-batches-py/data_batch_{}'.format(self.cifar_loc,i)
+                batches = self._load_batch(name,batches)
+                self.batches = batches
         
         meta_fn = os.path.join(self.cifar_loc, 'cifar-10-batches-py/batches.meta')
         with open(meta_fn, 'rb') as fo:
             meta = pickle.load(fo, encoding='bytes')
             CifarLoader.label_names = meta[b'label_names']
 
-    def shuffle(self, train=True):
-        if train:
-            np.random.shuffle(self.train_batches[b'images'])
-        else: 
-            np.random.shuffle(self.test_batch [b'images'])
+    def __len__(self):
+        return self._num_images
+
     
-    def get_one_image_batch(self, idx, train=True, batch_size=1):
-        
-        batches = self.train_batches if train else self.test_batches
-        label = batches[b'labels'][idx:idx+batch_size]
-        npimg = batches[b'images'][idx:idx+batch_size]
-        img = torch.from_numpy(npimg).to(self.device).to(self.precision)
-        return label, img
+    def __getitem__(self, idx):
+        label = self.batches[b'labels'][idx]
+        image = self.batches[b'images'][idx]
+        image = np.reshape(image, (3, 32, 32))
+        image = image.astype(np.float32) / 256.0
+        return image, label
     
     @staticmethod
     def display_img(img, label):
