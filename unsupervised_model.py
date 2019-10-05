@@ -79,8 +79,12 @@ class ConvAutoEncoder(nn.Module):
     
     def forward(self, x):        
         enc   = self.encoder(x)
-        encL  = enc.reshape(enc.size(0), -1)        
+        encL  = enc.view(enc.size(0), -1)        
         muV   = self.mu(encL)
+        
+        if not self.training:
+            return muV
+        
         varV  = self.var(encL)
         
         out   = self._reparameterize(muV, varV)

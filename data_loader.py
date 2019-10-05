@@ -10,7 +10,7 @@ main functions:
             b'labels'      : List of label intergers, 0-9
             b'num_images'  : int number of images
             b'images'      : numpy.ndarray of shape (N, X, Y, C)
-            b'label_names' : List of byte string describing labels
+            b'classes' : List of byte string describing labels
             
     get_one_image()
         given an index, returns label (an integer) and a torch 4D tensor
@@ -22,7 +22,7 @@ import os
 from torch.utils.data import Dataset
 
 class CifarLoader(Dataset):
-    label_names = []
+    classes = []
     def __init__(self, cifar_loc='./', is_test=False):
         
         super(CifarLoader, self).__init__()
@@ -66,7 +66,7 @@ class CifarLoader(Dataset):
         meta_fn = os.path.join(self.cifar_loc, 'cifar-10-batches-py/batches.meta')
         with open(meta_fn, 'rb') as fo:
             meta = pickle.load(fo, encoding='bytes')
-            CifarLoader.label_names = meta[b'label_names']
+            CifarLoader.classes = meta[b'label_names']
 
     def __len__(self):
         return self._num_images
