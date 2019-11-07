@@ -35,7 +35,7 @@ class TestCluster:
         """Add an image item, known to be in this cluster"""
         self._items.append(item)
 
-    def evaluate(self, model):
+    def intra_cluster_dist(self, model):
         distance = 0
         for _ in range(0, self.num_tests):
             idx1 = np.random.randint(0, len(self._items))
@@ -46,13 +46,13 @@ class TestCluster:
             mu2 = model(self._items[idx2])
             mu1 /= torch.norm(mu1)
             mu2 /= torch.norm(mu2)
-            distance += F.cosine_similarity(mu1, mu2)
+            distance += F.mse_loss(mu1, mu2)
 
         return distance.item()/self.num_tests
 
 
 class UnsupervisedTrainer:
-    """Trainign to make clusters of images"""
+    """Training to make clusters of images"""
 
     def __init__(self,
                  exp_type='CIFAR',
@@ -84,14 +84,14 @@ class UnsupervisedTrainer:
             im_shape = [3, 32, 32]
             rec_shape = [1, 32, 32]
         elif self.exp_type == 'MNIST-Fashion':
-            dataset = datasets.FashionMNIST('./data', transform=to_tensor)
+            dataset = datasets.FashionMNIST('./data', transform=to_tensor, download=True)
             testset = datasets.FashionMNIST(
-                './data', False, transform=to_tensor)
+                './data', False, transform=to_tensor, download=True)
             im_shape = [1, 28, 28]
             rec_shape = im_shape
         elif self.exp_type == 'MNIST':
-            dataset = datasets.MNIST(root='./data', transform=to_tensor)
-            testset = datasets.MNIST('./data', False, transform=to_tensor)
+            dataset = datasets.MNIST(root='./data', transform=to_tensor, download=True)
+            testset = datasets.MNIST('./data', False, transform=to_tensor, download=True)
             im_shape = [1, 28, 28]
             rec_shape = im_shape
 
@@ -135,18 +135,17 @@ class UnsupervisedTrainer:
     def test_step(self, test_step):
         self.model.train(False)
         named_loss = {}
-        mean_dist = 0
+        total_dist = 0
         for grp in self.test_groups:
-            err = grp.evaluate(self.model)
+            err = grp.intra_cluster_dist(self.model)
             named_loss[grp.label] = err
-            mean_dist = mean_dist + err
+            total_dist = total_dist + err
 
-        mean_dist = mean_dist/len(self.test_groups)
-        self.writer.add_scalars('InstMeanDist', named_loss, test_step)
-        self.writer.add_scalar('MeanDist', mean_dist, test_step)
+        self.writer.add_scalars('Intra Cluster Dist', named_loss, test_step)
+        self.writer.add_scalar('Intra Cluster Dist_total', total_dist, test_step)
 
         self.model.train(True)
-        print('Mean Distance: ', mean_dist)
+        print('Mean Distance: ', total_dist / len(self.test_groups))
 
     def train_loop(self):
         self.model.train()

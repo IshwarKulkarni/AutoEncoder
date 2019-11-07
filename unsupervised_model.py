@@ -13,44 +13,51 @@ from torch.nn import functional as F
 
 
 class ConvAutoEncoder(nn.Module):
-    """Simple VAE model: `Convolution-->FullyConnected-->DeConvolution` """
-    def __init__(self, in_dim, out_dim):
+    """Simple VAE model: `Convolution-->FullyConnected-->DeConvolution` 
+    """
+    def __init__(self, in_dim, out_dim, embedding_size=10):
         super(ConvAutoEncoder, self).__init__()
 
-        k_s = [16, 32, 64]
+        ek_s = [64, 96, 128, 192]
+        dk_s = [32, 64, 96, 128]
 
         self.lin_input_shape = in_dim[0] * in_dim[1] * in_dim[2]
 
         self.encoder = nn.Sequential(
-            nn.Conv2d(in_dim[0], k_s[0], kernel_size=3, stride=1),
+            nn.Conv2d(in_dim[0], ek_s[0], kernel_size=3, stride=1),
             nn.ELU(),
+
+            nn.Conv2d(ek_s[0], ek_s[1], kernel_size=3, stride=2),
+            nn.ReLU(),
+
+            nn.Conv2d(ek_s[1], ek_s[2], kernel_size=3, stride=1),
+            nn.ReLU(),
             nn.Dropout(),
 
-            nn.Conv2d(k_s[0], k_s[1], kernel_size=5, stride=2),
-            nn.ELU(),
+            nn.Conv2d(ek_s[2], ek_s[3], kernel_size=3, stride=1),
+            nn.ReLU(),
             nn.Dropout(),
 
-            nn.Conv2d(k_s[1], k_s[2], kernel_size=5, stride=1),
-            nn.ELU(),
-            nn.Dropout(),
-
-            nn.Conv2d(k_s[2], 8, kernel_size=3, stride=1),
+            nn.Conv2d(ek_s[3], 16, kernel_size=3, stride=1),
             nn.Sigmoid()
         )
 
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(1, k_s[0], 3, stride=1),
+            nn.ConvTranspose2d(1, dk_s[0], kernel_size=3, stride=1),
+            nn.ELU(),
+
+            nn.ConvTranspose2d(dk_s[0], dk_s[1], kernel_size=3, stride=1),
             nn.ReLU(),
 
-            nn.ConvTranspose2d(k_s[0], k_s[1], 5, stride=1),
+            nn.ConvTranspose2d(dk_s[1], dk_s[2], kernel_size=3, stride=2),
             nn.ReLU(),
             nn.Dropout(),
 
-            nn.ConvTranspose2d(k_s[1], k_s[2], 5, stride=2),
+            nn.ConvTranspose2d(dk_s[2], dk_s[3], kernel_size=4, stride=1),
             nn.ReLU(),
             nn.Dropout(),
 
-            nn.ConvTranspose2d(k_s[2], out_dim[0], 3, stride=1),
+            nn.ConvTranspose2d(dk_s[3], out_dim[0], kernel_size=3, stride=1),
             nn.Sigmoid()
         )
 
@@ -60,9 +67,12 @@ class ConvAutoEncoder(nn.Module):
 
         out_sz_lin = self.out_sz[0] * self.out_sz[1]
 
-        self._mu = nn.Linear(self.in_lin_sz, out_sz_lin)
+        self._mu = nn.Linear(self.in_lin_sz, embedding_size)
 
-        self._var = nn.Linear(self.in_lin_sz, out_sz_lin)
+        self._var = nn.Linear(self.in_lin_sz, embedding_size)
+
+        self._decode_embedded = nn.Linear(embedding_size, out_sz_lin)        
+
 
     def _encoder_out_sz(self, in_dim):
         b_im_dim = [1] + in_dim
@@ -90,9 +100,11 @@ class ConvAutoEncoder(nn.Module):
 
         out = self._reparameterize(mu, var)
 
+        out = self._decode_embedded(out)
+
         lin2d = out.reshape([-1, 1, self.out_sz[0], self.out_sz[1]])
 
-        out = self.decoder(lin2d)[:, :, 1:, 1:]
+        out = self.decoder(lin2d)
         return out, mu, var
 
     def _reparameterize(self, mu, logvar):
