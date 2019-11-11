@@ -13,7 +13,7 @@ from torch.nn import functional as F
 
 
 class ConvAutoEncoder(nn.Module):
-    """Simple VAE model: `Convolution-->FullyConnected-->DeConvolution` 
+    """Simple VAE model: `Convolution-->FullyConnected-->DeConvolution`
     """
     def __init__(self, in_dim, out_dim, embedding_size=10):
         super(ConvAutoEncoder, self).__init__()
@@ -71,7 +71,7 @@ class ConvAutoEncoder(nn.Module):
 
         self._var = nn.Linear(self.in_lin_sz, embedding_size)
 
-        self._decode_embedded = nn.Linear(embedding_size, out_sz_lin)        
+        self._decode_embedded = nn.Linear(embedding_size, out_sz_lin)
 
 
     def _encoder_out_sz(self, in_dim):
@@ -91,7 +91,7 @@ class ConvAutoEncoder(nn.Module):
     def forward(self, x):
         enc = self.encoder(x)
         enc_lin = enc.view(enc.size(0), -1)
-        mu = self._mu(enc_lin)
+        mu = F.normalize(self._mu(enc_lin))
 
         if not self.training:
             return mu

@@ -28,28 +28,26 @@ class TestCluster:
 
     def __init__(self, label, num_tests=20):
         self.num_tests = num_tests
-        self._items = []
+        self._batches = []
         self.label = label
 
     def add_item(self, item):
         """Add an image item, known to be in this cluster"""
-        self._items.append(item)
+        self._batches.append(item)
 
-    def intra_cluster_dist(self, model):
-        distance = 0
-        for _ in range(0, self.num_tests):
-            idx1 = np.random.randint(0, len(self._items))
-            idx2 = np.random.randint(0, len(self._items))
-            mu1 = model(self._items[idx1])
-            while idx1 == idx2:
-                idx2 = np.random.randint(0, len(self._items))
-            mu2 = model(self._items[idx2])
-            mu1 /= torch.norm(mu1)
-            mu2 /= torch.norm(mu2)
-            distance += F.mse_loss(mu1, mu2)
+    def rebatch(self, batch_size):
+        assert len(self._batches) > batch_size, "Need atleast {} items to batch".format(batch_size)
+        batches = []
+        for b in range(0, len(self._batches), batch_size):
+            batch = self._batches[b:b+batch_size]
+            batch = torch.squeeze(torch.stack(batch), 1)
+            batches.append(batch)
+        self._batches = batches
 
-        return distance.item()/self.num_tests
-
+    def intra_cluster_std(self, model, num_batches=10):
+        batch_mu = model(self._batches[0])
+        self.center, self.std = batch_mu.mean(0), batch_mu.std()
+        return self.std
 
 class UnsupervisedTrainer:
     """Training to make clusters of images"""
@@ -63,7 +61,7 @@ class UnsupervisedTrainer:
 
         super(UnsupervisedTrainer, self).__init__()
 
-        self.batch_size = 1000
+        self.batch_size = 500
         self.log_freq = log_freq  # in batches
         self.max_epochs = max_epochs
         self.model_save_freq = model_save
@@ -118,9 +116,12 @@ class UnsupervisedTrainer:
             batch, label = batch_label[0].to(self.device), batch_label[1]
             self.test_groups[label].add_item(batch)
 
+        for grp in self.test_groups:
+            grp.rebatch(512)
+
         print("Test group sizes:")
         for grp in self.test_groups:
-            print(grp.label, '->', len(grp._items))
+            print(grp.label, '->', len(grp._batches))
 
     def _summarize(self, im_shape):
 
@@ -135,17 +136,25 @@ class UnsupervisedTrainer:
     def test_step(self, test_step):
         self.model.train(False)
         named_loss = {}
-        total_dist = 0
+        total_std = 0
+        centers = []
         for grp in self.test_groups:
-            err = grp.intra_cluster_dist(self.model)
-            named_loss[grp.label] = err
-            total_dist = total_dist + err
+            std = grp.intra_cluster_std(self.model)
+            named_loss[grp.label] = std
+            total_std = total_std + std
+            centers.append(grp.center)
 
-        self.writer.add_scalars('Intra Cluster Dist', named_loss, test_step)
-        self.writer.add_scalar('Intra Cluster Dist_total', total_dist, test_step)
+        centers = torch.stack(centers)
+        inter_cluster_std = centers.std()
+
+        mean_std = total_std / len(self.test_groups)
+        self.writer.add_scalars('Intra Cluster std./Clusters', named_loss, test_step)
+        self.writer.add_scalar('Intra Cluster std./Mean', mean_std, test_step)
+        self.writer.add_scalar('Inter Cluster std.', inter_cluster_std, test_step)
+        self.writer.add_embedding(centers, global_step=test_step)
 
         self.model.train(True)
-        print('Mean Distance: ', total_dist / len(self.test_groups))
+        print('Mean std.: ', mean_std.item())
 
     def train_loop(self):
         self.model.train()
@@ -196,8 +205,7 @@ class UnsupervisedTrainer:
                     print('------------------TEST-------------------')
 
             if epoch % self.model_save_freq == 0:
-                torch.save(self.model.state_dict(),
-                           "epoch_{}.model".format(epoch))
+                torch.save(self.model.state_dict(), "epoch_{}.model".format(epoch))
 
         torch.save(self.model.state_dict(), "epoch_final.model")
 
