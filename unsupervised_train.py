@@ -8,6 +8,7 @@ Created on Sat Sep 28 18:52:16 2019
 
 import time
 
+import random
 import numpy as np
 import torch
 import torchvision as tv
@@ -30,6 +31,7 @@ class TestCluster:
         self.num_tests = num_tests
         self._batches = []
         self.label = label
+        self.batch_mu = None
 
     def add_item(self, item):
         """Add an image item, known to be in this cluster"""
@@ -43,31 +45,34 @@ class TestCluster:
             batch = torch.squeeze(torch.stack(batch), 1)
             batches.append(batch)
         self._batches = batches
+        self.metadata = [self.label] * batch_size
 
-    def intra_cluster_std(self, model, num_batches=10):
-        batch_mu = model(self._batches[0])
-        self.center, self.std = batch_mu.mean(0), batch_mu.std()
-        return self.std
+    def intra_cluster_std(self, model):
+        r = random.randint(0, len(self._batches)-2)
+        batch_mu = model(self._batches[r])
+        self.batch_mu = batch_mu
+        self.center = batch_mu.mean(dim=0)
+        return self.batch_mu.std(dim = 0).mean()
 
+    
 class UnsupervisedTrainer:
     """Training to make clusters of images"""
 
     def __init__(self,
                  exp_type='CIFAR',
-                 max_epochs=100,
+                 max_epochs=75,
                  log_freq=50,  # in batches
-                 model_save=10,
-                 test_freq=200):
+                 model_save_epoch=12):
 
         super(UnsupervisedTrainer, self).__init__()
 
         self.batch_size = 500
         self.log_freq = log_freq  # in batches
         self.max_epochs = max_epochs
-        self.model_save_freq = model_save
+        self.model_save_freq_epoch = model_save_epoch
         self.exp_type = exp_type
-        self.test_freq = test_freq
-
+        self.test_step_freq = 200
+        
         self.device = torch.device("cpu")
         if torch.cuda.device_count() >= 1:
             self.device = torch.device("cuda:0")
@@ -98,8 +103,12 @@ class UnsupervisedTrainer:
                                        shuffle=True, pin_memory=True)
 
         self.model = ConvAutoEncoder(im_shape, rec_shape)
+        try:
+            self.model.load_state_dict(torch.load('final_epoch.model'))
+        except:
+            pass
         self.model.to(self.device).to(self.float_dtype)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4,
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3,
                                           weight_decay=1e-5)
         self._summarize(im_shape)
 
@@ -117,7 +126,7 @@ class UnsupervisedTrainer:
             self.test_groups[label].add_item(batch)
 
         for grp in self.test_groups:
-            grp.rebatch(512)
+            grp.rebatch(16)
 
         print("Test group sizes:")
         for grp in self.test_groups:
@@ -127,7 +136,8 @@ class UnsupervisedTrainer:
 
         dummy_size = tuple([self.batch_size] + im_shape)
         dummy_input = torch.Tensor(torch.ones(dummy_size)).to(self.device)
-        self.writer = SummaryWriter('runs/auto_enc/{}'.format(self.exp_type))
+        self.writer = SummaryWriter('runs//{}'.format(self.exp_type))
+        self.model(dummy_input)
         self.writer.add_graph(self.model, dummy_input)
         self.writer.flush()
 
@@ -138,30 +148,35 @@ class UnsupervisedTrainer:
         named_loss = {}
         total_std = 0
         centers = []
+        batch_mus = []
+        meta = []
         for grp in self.test_groups:
             std = grp.intra_cluster_std(self.model)
             named_loss[grp.label] = std
             total_std = total_std + std
             centers.append(grp.center)
+            batch_mus.append(grp.batch_mu[:8])
+            meta += grp.metadata[:8]
 
+        batch_mus = torch.cat(batch_mus, 0)
         centers = torch.stack(centers)
-        inter_cluster_std = centers.std()
+        inter_cluster_std = centers.std(dim=0).mean()
 
         mean_std = total_std / len(self.test_groups)
         self.writer.add_scalars('Intra Cluster std./Clusters', named_loss, test_step)
         self.writer.add_scalar('Intra Cluster std./Mean', mean_std, test_step)
         self.writer.add_scalar('Inter Cluster std.', inter_cluster_std, test_step)
-        self.writer.add_embedding(centers, global_step=test_step)
-
+        self.writer.add_embedding(batch_mus, global_step=test_step,metadata=meta)
+        
         self.model.train(True)
-        print('Mean std.: ', mean_std.item())
+        print('Mean std.: {} / Step: {}'.format(mean_std.item(), test_step))
 
     def train_loop(self):
         self.model.train()
         total_steps = len(self.train_loader) * self.max_epochs
 
-        print("Training {} steps with device set to {}".format(total_steps,
-                                                               self.device))
+        print("Training {} steps @ {}steps/epoch with device set to {}".format(
+                total_steps, len(self.train_loader), self.device))
         step = 0
         start = time.time()
         for epoch in range(0, self.max_epochs):
@@ -188,8 +203,7 @@ class UnsupervisedTrainer:
 
                     self.writer.add_image(
                         'Train-Images', tv.utils.make_grid(batch[0:4]), step)
-                    self.writer.add_image(
-                        'Train-1C-Images', tv.utils.make_grid(batch_1c[0:4]), step)
+                    #self.writer.add_image('Train-1C-Images', tv.utils.make_grid(batch_1c[0:4]), step)
                     self.writer.add_image(
                         'Recon-Images', tv.utils.make_grid(recon[0:4]), step)
 
@@ -199,15 +213,24 @@ class UnsupervisedTrainer:
                     start = time.time()
                 step = step + 1
 
-                if step % self.test_freq == 0:
+                if step and step % self.test_step_freq == 0:
                     print('------------------TEST-------------------')
                     self.test_step(step)
                     print('------------------TEST-------------------')
 
-            if epoch % self.model_save_freq == 0:
+            if epoch % self.model_save_freq_epoch == 0:
                 torch.save(self.model.state_dict(), "epoch_{}.model".format(epoch))
 
         torch.save(self.model.state_dict(), "epoch_final.model")
 
+    def play(self, name):
+        trainer.model.train(False)
+        self.model.load_state_dict(torch.load(name))
+        for grp in self.test_groups:
+            grp.intra_cluster_std(self.model)
+            print( (torch.sum(grp.batch_mu, dim=0) / grp.batch_mu.shape[0]).cpu().detach().numpy() )
 
-UnsupervisedTrainer('MNIST').train_loop()
+trainer = UnsupervisedTrainer('MNIST')
+trainer.train_loop()
+#trainer.play('final_epoch.model')
+

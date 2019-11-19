@@ -15,7 +15,7 @@ from torch.nn import functional as F
 class ConvAutoEncoder(nn.Module):
     """Simple VAE model: `Convolution-->FullyConnected-->DeConvolution`
     """
-    def __init__(self, in_dim, out_dim, embedding_size=10):
+    def __init__(self, in_dim, out_dim, embedding_size=5):
         super(ConvAutoEncoder, self).__init__()
 
         ek_s = [64, 96, 128, 192]
@@ -91,7 +91,7 @@ class ConvAutoEncoder(nn.Module):
     def forward(self, x):
         enc = self.encoder(x)
         enc_lin = enc.view(enc.size(0), -1)
-        mu = F.normalize(self._mu(enc_lin))
+        mu = self._mu(enc_lin)
 
         if not self.training:
             return mu
@@ -117,5 +117,5 @@ class ConvAutoEncoder(nn.Module):
         """ from https://sergioskar.github.io/Autoencoder/"""
         bce = F.binary_cross_entropy(recon_x, x)
         kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        kld /= x.shape[0] * self.in_lin_sz
+        kld /= x.shape[0] * self.lin_input_shape
         return bce, kld
