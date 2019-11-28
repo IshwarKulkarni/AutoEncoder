@@ -8,67 +8,18 @@ Created on Sat Sep 28 18:52:16 2019
 
 import time
 
-import random
-import numpy as np
 import torch
 import torchvision as tv
 import torchvision.datasets as datasets
-from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchsummary import summary
 
 from data_set import CifarDataset
 from unsupervised_model import ConvAutoEncoder
+from test_clusterer import TestCluster
 
 # pylint: disable=too-many-instance-attributes
-
-
-class TestCluster:
-    """A known test cluster"""
-
-    def __init__(self, label, num_tests=20):
-        self.num_tests = num_tests
-        self._batches = []
-        self.label = label
-        self.batch_mu = None
-
-    def add_item(self, item):
-        """Add an image item, known to be in this cluster"""
-        self._batches.append(item)
-
-    def rebatch(self, batch_size):
-        assert len(self._batches) > batch_size, "Need atleast {} items to batch".format(batch_size)
-        batches = []
-        for b in range(0, len(self._batches), batch_size):
-            batch = self._batches[b:b+batch_size]
-            batch = torch.squeeze(torch.stack(batch), 1)
-            batches.append(batch)
-        self._batches = batches
-        self.metadata = [self.label] * batch_size
-
-    def intra_cluster_std(self, model):
-        r = random.randint(0, len(self._batches)-2)
-        batch_mu = model(self._batches[r])
-        self.batch_mu = batch_mu
-        self.center = batch_mu.mean(dim=0)
-        return self.batch_mu.std(dim = 0).mean()
-
-    def intra_cluster_sim(self, model, num_samples =10):
-        r = random.randint(0, len(self._batches)-2)
-        batch_mu = model(self._batches[r])
-        self.batch_mu = batch_mu
-        self.center = batch_mu.mean(dim=0)
-        n = batch_mu.shape[0] - 1
-        mean_sim = 0
-        for _ in range(0, num_samples):
-            r1 = random.randint(0, n)
-            r2 = random.randint(0, n)
-            while r1 == r2:
-                r2 = random.randint(0, n)
-            mean_sim += F.cosine_similarity(batch_mu[r1], batch_mu[r2], dim=0)
-
-        return mean_sim / num_samples
 
     
 class UnsupervisedTrainer:
@@ -82,12 +33,12 @@ class UnsupervisedTrainer:
 
         super(UnsupervisedTrainer, self).__init__()
 
-        self.batch_size = 1000
+        self.batch_size = 768
         self.log_freq = log_freq  # in batches
         self.max_epochs = max_epochs
         self.model_save_freq_epoch = model_save_epoch
         self.exp_type = exp_type
-        self.test_step_freq = 100
+        self.test_step_freq = 250
         
         self.device = torch.device("cpu")
         if torch.cuda.device_count() >= 1:
@@ -101,7 +52,7 @@ class UnsupervisedTrainer:
             dataset = CifarDataset('./data')
             testset = CifarDataset('./data', True)
             im_shape = [3, 32, 32]
-            rec_shape = [1, 32, 32]
+            rec_shape = [3, 32, 32]
         elif self.exp_type == 'MNIST-Fashion':
             dataset = datasets.FashionMNIST('./data', transform=to_tensor, download=True)
             testset = datasets.FashionMNIST(
@@ -127,7 +78,7 @@ class UnsupervisedTrainer:
             pass
         self.model.train(True).to(self.device)
 
-        init_lr = 5e-4
+        init_lr = 1e-3
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=init_lr, weight_decay=1e-5)
         self.lr_sched  = torch.optim.lr_scheduler.ExponentialLR(self.optimizer,
                                                            gamma=0.95, last_epoch=-1)
@@ -163,9 +114,9 @@ class UnsupervisedTrainer:
         self.writer = SummaryWriter('runs//{}'.format(self.exp_type))
         self.model.fake_training = True
         self.writer.add_graph(self.model, torch.ones(dummy_size).to(self.device))
-        self.model.fake_training = False
         self.writer.flush()  
         summary(self.model, tuple(im_shape))
+        self.model.fake_training = False
 
 
     def test_step(self, test_step):
@@ -191,7 +142,7 @@ class UnsupervisedTrainer:
         self.writer.add_scalar('Intra Cluster Similarity/Total', total_similarity, test_step)
         self.writer.add_scalar('Inter Cluster std.', inter_cluster_std, test_step)
         self.writer.add_embedding(batch_mus, global_step=test_step,metadata=meta)
-        
+
         self.model.train(True)
         print('Mean Inter Cluster Dist.: {} / Step: {}'.format(inter_cluster_std.item(), test_step))
 
@@ -210,8 +161,8 @@ class UnsupervisedTrainer:
                 recon, mu, logvar = self.model(batch)
 
                 progress = step / total_steps
-                batch_1c = torch.mean(batch, axis=1, keepdim=True)
-                bc, kl = self.model.loss_function(recon, batch_1c, mu, logvar)
+                #batch_1c = torch.mean(batch, axis=1, keepdim=True)
+                bc, kl = self.model.loss_function(recon, batch, mu, logvar)
                 loss = bc + kl
 
                 self.optimizer.zero_grad()
@@ -228,10 +179,10 @@ class UnsupervisedTrainer:
                            progress*100, dur, '-'*int(progress*40)))
 
                     self.writer.add_image(
-                        'Train-Images', tv.utils.make_grid(batch[0:4]), step)
+                        'Train/Train-Images', tv.utils.make_grid(batch[0:4]), step)
                     #self.writer.add_image('Train-1C-Images', tv.utils.make_grid(batch_1c[0:4]), step)
                     self.writer.add_image(
-                        'Recon-Images', tv.utils.make_grid(recon[0:4]), step)
+                        'Train/Recon-Images', tv.utils.make_grid(recon[0:4]), step)
 
                     self.writer.add_scalars(
                         'Loss', {'total': loss, 'bc': bc, 'kl': kl}, step)
@@ -261,7 +212,7 @@ class UnsupervisedTrainer:
             grp.intra_cluster_std(self.model)
             print( (torch.sum(grp.batch_mu, dim=0) / grp.batch_mu.shape[0]).cpu().detach().numpy() )
 
-trainer = UnsupervisedTrainer('MNIST')
+trainer = UnsupervisedTrainer('CIFAR')
 trainer.train_loop()
-#trainer.play('final_epoch.model')
+#trainer.play('mnist_final_epoch_deep.model')
 

@@ -1,0 +1,18 @@
+# .model files are how I save the model, ignore them
+*.model
+
+#VS Code stuff
+.vscode/
+
+#CLion stuff
+.idea
+
+#Saving the datasets
+data/
+
+#Save TensorBoard files here.
+runs/
+
+# Pycache stuff and other pre/compiled stuff.
+__*
+
