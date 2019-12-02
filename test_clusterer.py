@@ -1,6 +1,7 @@
 
 import random
 import torch
+from torch.nn import functional as F
 
 class TestCluster:
     """A known test cluster"""
@@ -30,7 +31,7 @@ class TestCluster:
         batch_mu = model(self._batches[r])
         self.batch_mu = batch_mu
         self.center = batch_mu.mean(dim=0)
-        return self.batch_mu.std(dim = 0).mean()
+        return self.batch_mu.std(dim=0).mean()
 
     def intra_cluster_sim(self, model, num_samples =10):
         r = random.randint(0, len(self._batches)-2)

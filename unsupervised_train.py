@@ -33,7 +33,7 @@ class UnsupervisedTrainer:
 
         super(UnsupervisedTrainer, self).__init__()
 
-        self.batch_size = 768
+        self.batch_size = 1536
         self.log_freq = log_freq  # in batches
         self.max_epochs = max_epochs
         self.model_save_freq_epoch = model_save_epoch
@@ -65,9 +65,7 @@ class UnsupervisedTrainer:
             im_shape = [1, 28, 28]
             rec_shape = im_shape
 
-        self.train_loader = DataLoader(dataset,
-                                       batch_size=self.batch_size,
-                                       shuffle=True, pin_memory=True)
+        self.train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, pin_memory=True)
 
         print("Trainset size: {}, testset size:{} ".format(len(dataset), len(testset)))
 
@@ -78,10 +76,9 @@ class UnsupervisedTrainer:
             pass
         self.model.train(True).to(self.device)
 
-        init_lr = 1e-3
+        init_lr = 5e-4
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=init_lr, weight_decay=1e-5)
-        self.lr_sched  = torch.optim.lr_scheduler.ExponentialLR(self.optimizer,
-                                                           gamma=0.95, last_epoch=-1)
+        self.lr_sched = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.95, last_epoch=-1)
 
         self._summarize(im_shape)
 
@@ -117,7 +114,6 @@ class UnsupervisedTrainer:
         self.writer.flush()  
         summary(self.model, tuple(im_shape))
         self.model.fake_training = False
-
 
     def test_step(self, test_step):
         self.model.train(False)
@@ -161,7 +157,7 @@ class UnsupervisedTrainer:
                 recon, mu, logvar = self.model(batch)
 
                 progress = step / total_steps
-                #batch_1c = torch.mean(batch, axis=1, keepdim=True)
+                # batch_1c = torch.mean(batch, axis=1, keepdim=True)
                 bc, kl = self.model.loss_function(recon, batch, mu, logvar)
                 loss = bc + kl
 
@@ -169,7 +165,7 @@ class UnsupervisedTrainer:
                 loss.backward()
                 self.optimizer.step()
 
-                step = step + 1                
+                step = step + 1
 
                 if step % self.log_freq == 0:
                     dur = 1000 * ((time.time() - start) /
@@ -210,9 +206,10 @@ class UnsupervisedTrainer:
         self.model.load_state_dict(torch.load(name))
         for grp in self.test_groups:
             grp.intra_cluster_std(self.model)
-            print( (torch.sum(grp.batch_mu, dim=0) / grp.batch_mu.shape[0]).cpu().detach().numpy() )
+            print((torch.sum(grp.batch_mu, dim=0) / grp.batch_mu.shape[0]).cpu().detach().numpy())
 
-trainer = UnsupervisedTrainer('CIFAR')
+
+trainer = UnsupervisedTrainer('MNIST-Fashion')
 trainer.train_loop()
 #trainer.play('mnist_final_epoch_deep.model')
 
