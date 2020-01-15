@@ -7,7 +7,12 @@ Created on Sat Sep 28 18:52:16 2019
 """
 
 import time
+import datetime
 
+import signal
+import os
+
+import logging
 import torch
 import torchvision as tv
 import torchvision.datasets as datasets
@@ -20,8 +25,8 @@ from unsupervised_model import ConvAutoEncoder
 from test_clusterer import TestCluster
 
 # pylint: disable=too-many-instance-attributes
+logging = 
 
-    
 class UnsupervisedTrainer:
     """Training to make clusters of images"""
 
@@ -33,35 +38,30 @@ class UnsupervisedTrainer:
 
         super(UnsupervisedTrainer, self).__init__()
 
-        self.batch_size = 1536
+        self.batch_size = 3096
         self.log_freq = log_freq  # in batches
         self.max_epochs = max_epochs
         self.model_save_freq_epoch = model_save_epoch
         self.exp_type = exp_type
         self.test_step_freq = 250
+
+        self.artifacts_dir = 'runs/{}'.format(self.exp_type)
         
-        self.device = torch.device("cpu")
-        if torch.cuda.device_count() >= 1:
-            self.device = torch.device("cuda:0")
-
-        self.float_dtype = torch.float32
-
         to_tensor = tv.transforms.ToTensor()
 
         if self.exp_type == 'CIFAR':
-            dataset = CifarDataset('./data')
-            testset = CifarDataset('./data', True)
+            dataset = datasets.CIFAR10('./data', transform=to_tensor, download=True)
+            testset = datasets.CIFAR10('./data', transform=to_tensor, download=True, train=False)
             im_shape = [3, 32, 32]
-            rec_shape = [3, 32, 32]
+            rec_shape = [1, 32, 32]
         elif self.exp_type == 'MNIST-Fashion':
             dataset = datasets.FashionMNIST('./data', transform=to_tensor, download=True)
-            testset = datasets.FashionMNIST(
-                './data', False, transform=to_tensor, download=True)
+            testset = datasets.FashionMNIST('./data', transform=to_tensor, download=True, train=False)
             im_shape = [1, 28, 28]
             rec_shape = im_shape
         elif self.exp_type == 'MNIST':
-            dataset = datasets.MNIST(root='./data', transform=to_tensor, download=True)
-            testset = datasets.MNIST('./data', False, transform=to_tensor, download=True)
+            dataset = datasets.MNIST('./data', transform=to_tensor, download=True)
+            testset = datasets.MNIST('./data', transform=to_tensor, download=True, train=False)
             im_shape = [1, 28, 28]
             rec_shape = im_shape
 
@@ -71,18 +71,29 @@ class UnsupervisedTrainer:
 
         self.model = ConvAutoEncoder(im_shape, rec_shape)
         try:
-            self.model.load_state_dict(torch.load('final_epoch.model'))
+            model_file = os.path.join(self.artifacts_dir, 'final_epoch.model')
+            print(f"Looking for model to load at {model_file}", end=' ')
+            self.model.load_state_dict(torch.load(model_file))
+            print(".. Done!")
         except:
-            pass
+            print(".. not found!")
+
+        self.device = torch.device("cpu")
+        if torch.cuda.device_count() > 0:
+            self.device = torch.device(0)
+            
         self.model.train(True).to(self.device)
 
-        init_lr = 5e-4
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=init_lr, weight_decay=1e-5)
-        self.lr_sched = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.95, last_epoch=-1)
-
+        self.writer = SummaryWriter(self.artifacts_dir)
         self._summarize(im_shape)
 
-        self.model.to(self.float_dtype)
+        if torch.cuda.device_count() >= 1:
+            self.device = torch.device(1)
+            self.model.train(True).to(self.device)
+
+        init_lr = 1e-4
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=init_lr, weight_decay=1e-5)
+        self.lr_sched = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.95, last_epoch=-1)
 
         self.test_groups = []
         self._create_testdata(testset)
@@ -108,12 +119,11 @@ class UnsupervisedTrainer:
 
         dummy_size = tuple([self.batch_size] + im_shape)
         self.model.train(True)
-        self.writer = SummaryWriter('runs//{}'.format(self.exp_type))
         self.model.fake_training = True
         self.writer.add_graph(self.model, torch.ones(dummy_size).to(self.device))
+        self.model.fake_training = False
         self.writer.flush()  
         summary(self.model, tuple(im_shape))
-        self.model.fake_training = False
 
     def test_step(self, test_step):
         self.model.train(False)
@@ -153,12 +163,12 @@ class UnsupervisedTrainer:
         for epoch in range(0, self.max_epochs):
             for bt, batch_label in enumerate(self.train_loader):
 
-                batch = batch_label[0].to(self.device).to(self.float_dtype)
+                batch = batch_label[0].to(self.device)
                 recon, mu, logvar = self.model(batch)
 
                 progress = step / total_steps
-                # batch_1c = torch.mean(batch, axis=1, keepdim=True)
-                bc, kl = self.model.loss_function(recon, batch, mu, logvar)
+                batch_1c = torch.mean(batch, axis=1, keepdim=True)
+                bc, kl = self.model.loss_function(recon, batch_1c, mu, logvar)
                 loss = bc + kl
 
                 self.optimizer.zero_grad()
@@ -170,15 +180,14 @@ class UnsupervisedTrainer:
                 if step % self.log_freq == 0:
                     dur = 1000 * ((time.time() - start) /
                                   (self.batch_size * self.log_freq))
-                    print("%d,\t%d:\t%1.5f = %1.5f + %1.5f | %2.1f%% | %1.3fms. | %s" %
-                          (epoch, bt, loss.item(), bc.item(), kl.item(),
+                    print(datetime.datetime.now().strftime('%m/%d %H:%M:%S'), end=': ')
+                    print("Step %d,\t%1.5f = %1.5f + %1.5f | %2.1f%% | %1.3fms. | %s" %
+                          (epoch, loss.item(), bc.item(), kl.item(),
                            progress*100, dur, '-'*int(progress*40)))
 
-                    self.writer.add_image(
-                        'Train/Train-Images', tv.utils.make_grid(batch[0:4]), step)
-                    #self.writer.add_image('Train-1C-Images', tv.utils.make_grid(batch_1c[0:4]), step)
-                    self.writer.add_image(
-                        'Train/Recon-Images', tv.utils.make_grid(recon[0:4]), step)
+                    self.writer.add_image('Train/Train-Images', tv.utils.make_grid(batch[0:4]), step)
+                    self.writer.add_image('Train-1C-Images', tv.utils.make_grid(batch_1c[0:4]), step)
+                    self.writer.add_image('Train/Recon-Images', tv.utils.make_grid(recon[0:4]), step)
 
                     self.writer.add_scalars(
                         'Loss', {'total': loss, 'bc': bc, 'kl': kl}, step)
@@ -191,25 +200,28 @@ class UnsupervisedTrainer:
                 
                 if step % self.test_step_freq == 0:
                     print('------------------TEST-------------------')
+                    self.model.train(False)
                     self.test_step(step)
+                    self.model.train(True)
                     print('------------------TEST-------------------')
             
             if epoch >= self.max_epochs/10:
                 self.lr_sched.step()
-            if epoch % self.model_save_freq_epoch == 0:
-                torch.save(self.model.state_dict(), "epoch_{}.model".format(epoch))
+            if epoch > 0 and epoch % self.model_save_freq_epoch == 0:
+                self.save_model("epoch_{}.model".format(epoch))
 
-        torch.save(self.model.state_dict(), "epoch_final.model")
+        self.save_model("final_epoch.model")
 
-    def play(self, name):
-        trainer.model.train(False)
-        self.model.load_state_dict(torch.load(name))
-        for grp in self.test_groups:
-            grp.intra_cluster_std(self.model)
-            print((torch.sum(grp.batch_mu, dim=0) / grp.batch_mu.shape[0]).cpu().detach().numpy())
+    def save_model(self, filename):
+        outfile = os.path.join(self.artifacts_dir, filename)
+        torch.save(self.model.state_dict(), outfile)
 
-
-trainer = UnsupervisedTrainer('MNIST-Fashion')
-trainer.train_loop()
-#trainer.play('mnist_final_epoch_deep.model')
-
+try:
+    trainer = UnsupervisedTrainer('MNIST')
+    trainer.train_loop()
+except KeyboardInterrupt:
+    if trainer :
+        print("Keyboard Interrupt, saving model and quitting\n")
+        trainer.save_model("final_epoch.model")
+except:
+    raise

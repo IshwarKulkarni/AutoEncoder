@@ -16,7 +16,7 @@ from torch.nn import functional as F
 class ResnetBlocks(nn.Module):
 
     def __init__(self, conv: bool, in_ch: int, out_ch: int, activation: nn.Module,
-                 num_blocks=2, k_sz=3, stride=1, drop=True):
+                 num_blocks=3, k_sz=3, stride=1, drop=True):
         super(ResnetBlocks, self).__init__()
         paddding = k_sz // 2
         input_layer = [nn.Conv2d(in_ch, out_ch, k_sz, stride, padding=paddding) if conv else \
@@ -61,12 +61,13 @@ def _reparameterize(mu, logvar):
 class ConvAutoEncoder(nn.Module):
     """Simple VAE model: `Convolution-->FullyConnected-->DeConvolution` """
 
-    def __init__(self, in_dim, out_dim, embedding_size=4):
+    def __init__(self, in_dim, out_dim, embedding_size=6):
         super(ConvAutoEncoder, self).__init__()
 
-        base = [64, 64, 80, 96, 128]
-        ek_s = [int(i*.5) for i in base]
-        dk_s = [i for i in reversed(ek_s)]
+        base = [12, 24, 24, 48]
+        ek_s = [int(i) for i in base]
+        dk_s = ek_s
+        dk_s.reverse()
 
         in_ch, out_ch = in_dim[0], out_dim[0]
 
@@ -77,10 +78,7 @@ class ConvAutoEncoder(nn.Module):
             ResnetBlocks(True, ek_s[0], ek_s[1], nn.ReLU(), stride=2),
             ResnetBlocks(True, ek_s[1], ek_s[1], nn.ReLU()),
             ResnetBlocks(True, ek_s[1], ek_s[2], nn.ReLU(), stride=2),
-            ResnetBlocks(True, ek_s[2], ek_s[3], nn.ReLU(), stride=2),
-            ResnetBlocks(True, ek_s[3], ek_s[4], nn.ReLU(), stride=2),
-            ResnetBlocks(True, ek_s[4], ek_s[4],   nn.Sigmoid()),
-
+            ResnetBlocks(True, ek_s[2], ek_s[3], nn.ReLU()),
             nn.Sigmoid()
         )
 
@@ -89,10 +87,7 @@ class ConvAutoEncoder(nn.Module):
             ResnetBlocks(False, dk_s[0], dk_s[1], nn.ReLU()),
             ResnetBlocks(False, dk_s[1], dk_s[2], nn.ReLU()),
             ResnetBlocks(False, dk_s[2], dk_s[3], nn.ReLU(), stride=2),
-            ResnetBlocks(False, dk_s[3], dk_s[4], nn.ReLU(), stride=2),
-            ResnetBlocks(False, dk_s[4], dk_s[4], nn.ReLU()),
-            ResnetBlocks(False, dk_s[4], out_ch,  nn.Sigmoid()),
-
+            ResnetBlocks(False, dk_s[3], out_ch,  nn.ReLU()),
             nn.Sigmoid()
         )
 
